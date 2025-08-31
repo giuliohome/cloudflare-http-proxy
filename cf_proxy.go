@@ -1,330 +1,339 @@
 package main
 
 import (
-    "bufio"
-    "bytes"
-    "fmt"
-    "io"
-    "net/http"
-    "os"
-    "os/exec"
-    "strings"
-    "time"
-    "strconv"
+	"bufio"
+	"bytes"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+	"strconv"
 
-    "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
 // CloudflareAccessProxy represents the proxy instance
 type CloudflareAccessProxy struct {
-    targetDomain   string
-    localPort      int
-    session        *http.Client
-    cfCookie       string
-    cookieExpires  int64
-    logger         *logrus.Logger
+	targetDomain  string
+	localPort     int
+	session       *http.Client
+	cfCookie      string
+	cookieExpires int64
+	logger        *logrus.Logger
 }
 
 // NewCloudflareAccessProxy creates a new proxy instance
 func NewCloudflareAccessProxy(targetDomain string, localPort int) *CloudflareAccessProxy {
-    return &CloudflareAccessProxy{
-        targetDomain:  targetDomain,
-        localPort:     localPort,
-        session:       &http.Client{Timeout: 30 * time.Second},
-        logger:        logrus.New(),
-    }
+	return &CloudflareAccessProxy{
+		targetDomain: targetDomain,
+		localPort:    localPort,
+		session: &http.Client{
+			Timeout: 30 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse // Don't follow redirects
+			},
+		},
+		logger: logrus.New(),
+	}
 }
 
 // authenticateWithCloudflared authenticates using cloudflared CLI if available
 func (p *CloudflareAccessProxy) authenticateWithCloudflared() bool {
-    p.logger.Info("🔐 Authenticating with cloudflared...")
-    p.logger.Infof("📡 Target domain: %s", p.targetDomain)
+	p.logger.Info("🔐 Authenticating with cloudflared...")
+	p.logger.Infof("📡 Target domain: %s", p.targetDomain)
 
-    // Check if cloudflared is available
-    if _, err := exec.LookPath("cloudflared"); err != nil {
-        p.logger.Error("❌ cloudflared not found in PATH")
-        return false
-    }
+	// Check if cloudflared is available
+	if _, err := exec.LookPath("cloudflared"); err != nil {
+		p.logger.Error("❌ cloudflared not found in PATH")
+		return false
+	}
 
-    // Login with cloudflared
-    p.logger.Info("🚀 Launching cloudflared access login...")
-    loginCmd := exec.Command("cloudflared", "access", "login", fmt.Sprintf("https://%s", p.targetDomain))
-    loginCmd.Stdout = os.Stdout
-    loginCmd.Stderr = os.Stderr
+	// Login with cloudflared
+	p.logger.Info("🚀 Launching cloudflared access login...")
+	loginCmd := exec.Command("cloudflared", "access", "login", fmt.Sprintf("https://%s", p.targetDomain))
+	loginCmd.Stdout = os.Stdout
+	loginCmd.Stderr = os.Stderr
 
-    if err := loginCmd.Run(); err != nil {
-        p.logger.Errorf("❌ cloudflared login failed: %v", err)
-        return false
-    }
+	if err := loginCmd.Run(); err != nil {
+		p.logger.Errorf("❌ cloudflared login failed: %v", err)
+		return false
+	}
 
-    // Get the token
-    p.logger.Info("🔑 Retrieving access token...")
-    tokenCmd := exec.Command("cloudflared", "access", "token", fmt.Sprintf("-app=https://%s", p.targetDomain))
-    tokenCmd.Stderr = os.Stderr
+	// Get the token
+	p.logger.Info("🔑 Retrieving access token...")
+	tokenCmd := exec.Command("cloudflared", "access", "token", fmt.Sprintf("-app=https://%s", p.targetDomain))
+	tokenCmd.Stderr = os.Stderr
 
-    output, err := tokenCmd.Output()
-    if err != nil {
-        p.logger.Errorf("❌ Failed to retrieve token: %v", err)
-        return false
-    }
+	output, err := tokenCmd.Output()
+	if err != nil {
+		p.logger.Errorf("❌ Failed to retrieve token: %v", err)
+		return false
+	}
 
-    token := strings.TrimSpace(string(output))
-    if token != "" {
-        p.cfCookie = token
-        // Set expiration to 23 hours from now (typical CF Access session)
-        p.cookieExpires = time.Now().Unix() + int64(23*3600)
-        p.logger.Info("✅ Successfully authenticated via cloudflared!")
-        return true
-    }
+	token := strings.TrimSpace(string(output))
+	if token != "" {
+		p.cfCookie = token
+		// Set expiration to 23 hours from now (typical CF Access session)
+		p.cookieExpires = time.Now().Unix() + int64(23*3600)
+		p.logger.Info("✅ Successfully authenticated via cloudflared!")
+		return true
+	}
 
-    return false
+	return false
 }
 
 // extractCFCookieFromBrowser attempts to extract CF_Authorization cookie from browser
 func (p *CloudflareAccessProxy) extractCFCookieFromBrowser() bool {
-    // TODO: Implement browser cookie extraction
-    // Could use a library like github.com/tebeka/selenium or similar
-    p.logger.Info("⚠️  Browser cookie extraction not implemented")
-    return false
+	// TODO: Implement browser cookie extraction
+	// Could use a library like github.com/tebeka/selenium or similar
+	p.logger.Info("⚠️  Browser cookie extraction not implemented")
+	return false
 }
 
 // authenticateManual handles manual authentication
 func (p *CloudflareAccessProxy) authenticateManual() bool {
-    p.logger.Infof("🔐 Manual authentication for %s", p.targetDomain)
-    p.logger.Println("Choose your method:")
-    p.logger.Println("1. CloudFlared CLI (recommended)")
-    p.logger.Println("2. Browser cookie extraction")
+	fmt.Printf("\n🔐 Manual authentication for %s\n", p.targetDomain)
+	fmt.Println("Choose your method:")
+	fmt.Println("1. CloudFlared CLI (recommended)")
+	fmt.Println("2. Browser cookie extraction")
 
-    reader := bufio.NewReader(os.Stdin)
-    fmt.Print("\nChoose method (1 or 2): ")
-    input, _ := reader.ReadString('\n')
-    choice := strings.TrimSpace(input)
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("\nChoose method (1 or 2): ")
+	input, _ := reader.ReadString('\n')
+	choice := strings.TrimSpace(input)
 
-    if choice == "1" {
-        p.logger.Println("\n📋 CloudFlared steps:")
-        p.logger.Printf("1. Run: cloudflared access login https://%s", p.targetDomain)
-        p.logger.Printf("2. Run: cloudflared access token -app=https://%s", p.targetDomain)
-        p.logger.Println("3. Copy the token output and paste it below:")
+	if choice == "1" {
+		fmt.Println("\n📋 CloudFlared steps:")
+		fmt.Printf("1. Run: cloudflared access login https://%s\n", p.targetDomain)
+		fmt.Printf("2. Run: cloudflared access token -app=https://%s\n", p.targetDomain)
+		fmt.Println("3. Copy the token output and paste it below:")
 
-        fmt.Print("\nCF_Authorization token: ")
-        tokenInput, _ := reader.ReadString('\n')
-        tokenValue := strings.TrimSpace(tokenInput)
+		fmt.Print("\nCF_Authorization token: ")
+		tokenInput, _ := reader.ReadString('\n')
+		tokenValue := strings.TrimSpace(tokenInput)
 
-        if tokenValue != "" {
-            p.cfCookie = tokenValue
-            // Set expiration to 23 hours from now (typical CF Access session)
-            p.cookieExpires = time.Now().Unix() + int64(23*3600)
-            return true
-        }
-    } else {
-        p.logger.Println("\n📋 Browser cookie steps:")
-        p.logger.Printf("1. Open your browser and go to: https://%s", p.targetDomain)
-        p.logger.Println("2. Complete Cloudflare authentication")
-        p.logger.Println("3. Open browser dev tools → Application → Cookies")
-        p.logger.Printf("4. Find 'CF_Authorization' cookie for %s", p.targetDomain)
-        p.logger.Println("5. Copy the cookie value and paste it here:")
+		if tokenValue != "" {
+			p.cfCookie = tokenValue
+			// Set expiration to 23 hours from now (typical CF Access session)
+			p.cookieExpires = time.Now().Unix() + int64(23*3600)
+			return true
+		}
+	} else {
+		fmt.Println("\n📋 Browser cookie steps:")
+		fmt.Printf("1. Open your browser and go to: https://%s\n", p.targetDomain)
+		fmt.Println("2. Complete Cloudflare authentication")
+		fmt.Println("3. Open browser dev tools → Application → Cookies")
+		fmt.Printf("4. Find 'CF_Authorization' cookie for %s\n", p.targetDomain)
+		fmt.Println("5. Copy the cookie value and paste it here:")
 
-        fmt.Print("\nCF_Authorization cookie: ")
-        cookieInput, _ := reader.ReadString('\n')
-        cookieValue := strings.TrimSpace(cookieInput)
+		fmt.Print("\nCF_Authorization cookie: ")
+		cookieInput, _ := reader.ReadString('\n')
+		cookieValue := strings.TrimSpace(cookieInput)
 
-        if cookieValue != "" {
-            p.cfCookie = cookieValue
-            // Set expiration to 23 hours from now (typical CF Access session)
-            p.cookieExpires = time.Now().Unix() + int64(23*3600)
-            return true
-        }
-    }
+		if cookieValue != "" {
+			p.cfCookie = cookieValue
+			// Set expiration to 23 hours from now (typical CF Access session)
+			p.cookieExpires = time.Now().Unix() + int64(23*3600)
+			return true
+		}
+	}
 
-    return false
+	return false
 }
 
 // isAuthenticated checks if we have a valid authentication cookie
 func (p *CloudflareAccessProxy) isAuthenticated() bool {
-    return p.cfCookie != "" && time.Now().Unix() < p.cookieExpires
+	return p.cfCookie != "" && time.Now().Unix() < p.cookieExpires
 }
 
 // ensureAuthenticated ensures we have valid authentication
 func (p *CloudflareAccessProxy) ensureAuthenticated() bool {
-    if p.isAuthenticated() {
-        return true
-    }
+	if p.isAuthenticated() {
+		return true
+	}
 
-    // Try cloudflared authentication first
-    if p.authenticateWithCloudflared() {
-        return true
-    }
+	// Try cloudflared authentication first
+	if p.authenticateWithCloudflared() {
+		return true
+	}
 
-    // Try to get cookie from browser
-    if p.extractCFCookieFromBrowser() {
-        return true
-    }
+	// Try to get cookie from browser
+	if p.extractCFCookieFromBrowser() {
+		return true
+	}
 
-    // Fall back to manual authentication
-    return p.authenticateManual()
+	// Fall back to manual authentication
+	return p.authenticateManual()
 }
 
 // proxyHandler handles HTTP requests
 type proxyHandler struct {
-    proxy *CloudflareAccessProxy
+	proxy *CloudflareAccessProxy
 }
 
 // NewProxyHandler creates a new proxy handler
 func NewProxyHandler(proxy *CloudflareAccessProxy) *proxyHandler {
-    return &proxyHandler{proxy: proxy}
+	return &proxyHandler{proxy: proxy}
 }
 
 // ServeHTTP implements http.Handler interface
 func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-    // Ensure we're authenticated
-    if !h.proxy.ensureAuthenticated() {
-        http.Error(w, "Authentication failed", http.StatusUnauthorized)
-        return
-    }
+	// Ensure we're authenticated
+	if !h.proxy.ensureAuthenticated() {
+		http.Error(w, "Authentication failed", http.StatusUnauthorized)
+		return
+	}
 
-    // Build target URL
-    targetURL := fmt.Sprintf("https://%s%s", h.proxy.targetDomain, r.URL.RequestURI())
+	// Build target URL
+	targetURL := fmt.Sprintf("https://%s%s", h.proxy.targetDomain, r.URL.Path)
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
 
-    // Create a new request
-    req, err := http.NewRequest(r.Method, targetURL, nil)
-    if err != nil {
-        http.Error(w, "Failed to create request", http.StatusInternalServerError)
-        return
-    }
+	// Read request body if present
+	var bodyBytes []byte
+	var err error
+	if r.Body != nil {
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	}
 
-    // Copy headers from original request
-    for name, values := range r.Header {
-        for _, value := range values {
-            req.Header.Add(name, value)
-        }
-    }
+	// Create a new request
+	var req *http.Request
+	if len(bodyBytes) > 0 {
+		req, err = http.NewRequest(r.Method, targetURL, bytes.NewReader(bodyBytes))
+	} else {
+		req, err = http.NewRequest(r.Method, targetURL, nil)
+	}
+	if err != nil {
+		http.Error(w, "Failed to create request", http.StatusInternalServerError)
+		return
+	}
 
-    // Remove host header as we're changing the target
-    req.Header.Del("Host")
+	// Copy headers from original request, excluding problematic ones
+	for name, values := range r.Header {
+		// Skip host and accept-encoding headers
+		if strings.ToLower(name) == "host" || strings.ToLower(name) == "accept-encoding" {
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 
-    // Remove accept-encoding to avoid compression issues
-    req.Header.Del("Accept-Encoding")
+	// Fix OCI manifest support for registry requests
+	if strings.HasPrefix(r.URL.Path, "/v2/") && req.Header.Get("Accept") != "" {
+		accept := req.Header.Get("Accept")
+		ociTypes := []string{
+			"application/vnd.oci.image.manifest.v1+json",
+			"application/vnd.oci.image.index.v1+json",
+		}
+		for _, ociType := range ociTypes {
+			if !strings.Contains(accept, ociType) {
+				accept += ", " + ociType
+			}
+		}
+		req.Header.Set("Accept", accept)
+	}
 
-    // Fix OCI manifest support for registry requests
-    if strings.HasPrefix(r.URL.Path, "/v2/") {
-        if accept := req.Header.Get("Accept"); accept != "" {
-            ociTypes := []string{
-                "application/vnd.oci.image.manifest.v1+json",
-                "application/vnd.oci.image.index.v1+json",
-            }
-            for _, ociType := range ociTypes {
-                if !strings.Contains(accept, ociType) {
-                    req.Header.Set("Accept", accept+", "+ociType)
-                }
-            }
-        }
-    }
+	// Add Cloudflare Access cookie
+	cookieValue := fmt.Sprintf("CF_Authorization=%s", h.proxy.cfCookie)
+	if existingCookie := req.Header.Get("Cookie"); existingCookie != "" {
+		cookieValue = fmt.Sprintf("%s; %s", existingCookie, cookieValue)
+	}
+	req.Header.Set("Cookie", cookieValue)
 
-    // Add Cloudflare Access cookie
-    cookieValue := fmt.Sprintf("CF_Authorization=%s", h.proxy.cfCookie)
-    if existingCookie := req.Header.Get("Cookie"); existingCookie != "" {
-        cookieValue = fmt.Sprintf("%s; %s", existingCookie, cookieValue)
-    }
-    req.Header.Set("Cookie", cookieValue)
+	// Make the proxied request
+	resp, err := h.proxy.session.Do(req)
+	if err != nil {
+		h.proxy.logger.Errorf("❌ Proxy error: %v", err)
+		http.Error(w, fmt.Sprintf("Proxy error: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
 
-    // Copy request body if present
-    var body []byte
-    if r.Body != nil {
-        body, err = io.ReadAll(r.Body)
-        if err != nil {
-            http.Error(w, "Failed to read request body", http.StatusInternalServerError)
-            return
-        }
-        req.Body = io.NopCloser(bytes.NewBuffer(body))
-    }
+	// Copy response headers first (before WriteHeader)
+	for name, values := range resp.Header {
+		// Skip headers that could cause issues
+		if strings.ToLower(name) == "transfer-encoding" || strings.ToLower(name) == "connection" {
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(name, value)
+		}
+	}
 
-    // Make the proxied request
-    resp, err := h.proxy.session.Do(req)
-    if err != nil {
-        h.proxy.logger.Errorf("❌ Proxy error: %v", err)
-        http.Error(w, fmt.Sprintf("Proxy error: %v", err), http.StatusInternalServerError)
-        return
-    }
-    defer resp.Body.Close()
+	// Copy response status
+	w.WriteHeader(resp.StatusCode)
 
-    // Copy response status
-    w.WriteHeader(resp.StatusCode)
-
-    // Copy response headers
-    for name, values := range resp.Header {
-        for _, value := range values {
-            w.Header().Add(name, value)
-        }
-    }
-
-    // Remove headers that could cause issues
-    w.Header().Del("Transfer-Encoding")
-    w.Header().Del("Connection")
-
-    // Copy response body
-    if r.Method != "HEAD" {
-        _, err = io.Copy(w, resp.Body)
-        if err != nil {
-            h.proxy.logger.Errorf("❌ Failed to copy response body: %v", err)
-        }
-    }
+	// Copy response body
+	if r.Method != "HEAD" {
+		_, err = io.Copy(w, resp.Body)
+		if err != nil {
+			h.proxy.logger.Errorf("❌ Failed to copy response body: %v", err)
+		}
+	}
+	
+	// Log the request (similar to Python's log_message)
+	h.proxy.logger.Infof("🔄 %s %s %d", r.Method, r.URL.Path, resp.StatusCode)
 }
 
 // main function
 func main() {
-    // Parse command line arguments
-    if len(os.Args) < 2 {
-        fmt.Println("Usage: go run main.go <target_domain> [--port <port>]")
-        os.Exit(1)
-    }
+	// Parse command line arguments
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: cf-proxy <target_domain> [--port <port>]")
+		os.Exit(1)
+	}
 
-    domain := os.Args[1]
-    port := 8081
+	domain := os.Args[1]
+	port := 8081
 
-    if len(os.Args) > 3 && os.Args[2] == "--port" {
-        p, err := strconv.Atoi(os.Args[3])
-        if err != nil {
-            fmt.Println("Invalid port number")
-            os.Exit(1)
-        }
-        port = p
-    }
+	if len(os.Args) > 3 && os.Args[2] == "--port" {
+		p, err := strconv.Atoi(os.Args[3])
+		if err != nil {
+			fmt.Println("Invalid port number")
+			os.Exit(1)
+		}
+		port = p
+	}
 
-    fmt.Printf("🚀 Starting Cloudflare Access Proxy\n")
-    fmt.Printf("📡 Target: %s\n", domain)
-    fmt.Printf("🔗 Local proxy: http://localhost:%d\n", port)
+	fmt.Printf("🚀 Starting Cloudflare Access Proxy\n")
+	fmt.Printf("📡 Target: %s\n", domain)
+	fmt.Printf("🔗 Local proxy: http://localhost:%d\n", port)
 
-    // Create proxy instance
-    proxy := NewCloudflareAccessProxy(domain, port)
+	// Create proxy instance
+	proxy := NewCloudflareAccessProxy(domain, port)
 
-    // Authenticate upfront before starting server
-    fmt.Println("\n🔐 Authentication required before starting proxy...")
-    if !proxy.ensureAuthenticated() {
-        fmt.Println("❌ Authentication failed. Exiting.")
-        os.Exit(1)
-    }
-    fmt.Println("✅ Authentication successful!")
+	// Authenticate upfront before starting server
+	fmt.Println("\n🔐 Authentication required before starting proxy...")
+	if !proxy.ensureAuthenticated() {
+		fmt.Println("❌ Authentication failed. Exiting.")
+		os.Exit(1)
+	}
+	fmt.Println("✅ Authentication successful!")
 
-    // Create HTTP server
-    handler := NewProxyHandler(proxy)
-    server := &http.Server{
-        Addr:    fmt.Sprintf("localhost:%d", port),
-        Handler: handler,
-    }
+	// Create HTTP server
+	handler := NewProxyHandler(proxy)
+	server := &http.Server{
+		Addr:    fmt.Sprintf("localhost:%d", port),
+		Handler: handler,
+	}
 
-    fmt.Printf("\n🚀 Proxy running on http://localhost:%d\n", port)
-    fmt.Printf("💡 Configure your client to use localhost:%d instead of %s\n", port, domain)
-    fmt.Println("🛑 Press Ctrl+C to stop")
+	fmt.Printf("\n🚀 Proxy running on http://localhost:%d\n", port)
+	fmt.Printf("💡 Configure your client to use localhost:%d instead of %s\n", port, domain)
+	fmt.Println("🛑 Press Ctrl+C to stop")
 
-    // Start server
-    if err := server.ListenAndServe(); err != nil {
-        fmt.Printf("❌ Server error: %v\n", err)
-        os.Exit(1)
-    }
-}
-
-// Helper function to check if a command exists
-func commandExists(cmd string) bool {
-    _, err := exec.LookPath(cmd)
-    return err == nil
+	// Start server
+	if err := server.ListenAndServe(); err != nil {
+		fmt.Printf("❌ Server error: %v\n", err)
+		os.Exit(1)
+	}
 }
