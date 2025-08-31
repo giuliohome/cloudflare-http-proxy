@@ -11,6 +11,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 import json
 import time
+import subprocess
+import shutil
 from typing import Optional
 
 class CloudflareAccessProxy:
@@ -20,6 +22,55 @@ class CloudflareAccessProxy:
         self.session = requests.Session()
         self.cf_cookie: Optional[str] = None
         self.cookie_expires = 0
+
+    def authenticate_with_cloudflared(self) -> bool:
+        """
+        Authenticate using cloudflared CLI if available
+        """
+        # Check if cloudflared is available
+        if not shutil.which("cloudflared"):
+            return False
+            
+        print(f"\n🔐 Authenticating with cloudflared...")
+        print(f"📡 Target domain: {self.target_domain}")
+        
+        try:
+            # Login with cloudflared
+            print("🚀 Launching cloudflared access login...")
+            result = subprocess.run([
+                "cloudflared", "access", "login", 
+                f"https://{self.target_domain}"
+            ], capture_output=True, text=True, timeout=120)
+            
+            if result.returncode != 0:
+                print(f"❌ cloudflared login failed: {result.stderr}")
+                return False
+                
+            # Get the token
+            print("🔑 Retrieving access token...")
+            result = subprocess.run([
+                "cloudflared", "access", "token", 
+                f"-app=https://{self.target_domain}"
+            ], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                print(f"❌ Failed to retrieve token: {result.stderr}")
+                return False
+                
+            token = result.stdout.strip()
+            if token:
+                self.cf_cookie = token
+                # Set expiration to 23 hours from now (typical CF Access session)
+                self.cookie_expires = time.time() + (23 * 3600)
+                print("✅ Successfully authenticated via cloudflared!")
+                return True
+                
+        except subprocess.TimeoutExpired:
+            print("❌ cloudflared command timed out")
+        except Exception as e:
+            print(f"❌ cloudflared authentication failed: {e}")
+            
+        return False
 
     def extract_cf_cookie_from_browser(self) -> bool:
         """
@@ -33,23 +84,45 @@ class CloudflareAccessProxy:
 
     def authenticate_manual(self) -> bool:
         """
-        Manual authentication - user provides cookie
+        Manual authentication - user provides cookie or token
         """
-        print(f"\n🔐 Authentication required for {self.target_domain}")
-        print("1. Open your browser and go to:")
-        print(f"   https://{self.target_domain}")
-        print("2. Complete Cloudflare authentication")
-        print("3. Open browser dev tools → Application → Cookies")
-        print(f"4. Find 'CF_Authorization' cookie for {self.target_domain}")
-        print("5. Copy the cookie value and paste it here:")
+        print(f"\n🔐 Manual authentication for {self.target_domain}")
+        print("Choose your method:")
+        print("1. CloudFlared CLI (recommended)")
+        print("2. Browser cookie extraction")
+        
+        choice = input("\nChoose method (1 or 2): ").strip()
+        
+        if choice == "1":
+            print("\n📋 CloudFlared steps:")
+            print(f"1. Run: cloudflared access login https://{self.target_domain}")
+            print(f"2. Run: cloudflared access token -app=https://{self.target_domain}")
+            print("3. Copy the token output and paste it below:")
+            
+            token_value = input("\nCF_Authorization token: ").strip()
+            
+            if token_value:
+                self.cf_cookie = token_value
+                # Set expiration to 23 hours from now (typical CF Access session)
+                self.cookie_expires = time.time() + (23 * 3600)
+                return True
+        else:
+            print("\n📋 Browser cookie steps:")
+            print("1. Open your browser and go to:")
+            print(f"   https://{self.target_domain}")
+            print("2. Complete Cloudflare authentication")
+            print("3. Open browser dev tools → Application → Cookies")
+            print(f"4. Find 'CF_Authorization' cookie for {self.target_domain}")
+            print("5. Copy the cookie value and paste it here:")
 
-        cookie_value = input("\nCF_Authorization cookie: ").strip()
+            cookie_value = input("\nCF_Authorization cookie: ").strip()
 
-        if cookie_value:
-            self.cf_cookie = cookie_value
-            # Set expiration to 23 hours from now (typical CF Access session)
-            self.cookie_expires = time.time() + (23 * 3600)
-            return True
+            if cookie_value:
+                self.cf_cookie = cookie_value
+                # Set expiration to 23 hours from now (typical CF Access session)
+                self.cookie_expires = time.time() + (23 * 3600)
+                return True
+                
         return False
 
     def is_authenticated(self) -> bool:
@@ -62,7 +135,11 @@ class CloudflareAccessProxy:
         if self.is_authenticated():
             return True
 
-        # Try to get cookie from browser first
+        # Try cloudflared authentication first
+        if self.authenticate_with_cloudflared():
+            return True
+
+        # Try to get cookie from browser
         if self.extract_cf_cookie_from_browser():
             return True
 

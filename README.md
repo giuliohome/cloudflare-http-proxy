@@ -62,6 +62,16 @@ docker run -it --rm -p 8081:8081 cf-proxy your-protected-domain.com --port 8081
    ```
 
 2. **Authenticate when prompted:**
+   
+   **Option A: Using cloudflared (recommended):**
+   ```bash
+   # Login and get token
+   cloudflared access login https://registry.yourdomain.com
+   export CF_TOKEN=$(cloudflared access token -app=https://registry.yourdomain.com)
+   # Paste the token when the proxy prompts
+   ```
+   
+   **Option B: Manual browser method:**
    - Open your browser and navigate to `https://registry.yourdomain.com`
    - Complete the Cloudflare authentication
    - Copy the `CF_Authorization` cookie value from browser dev tools
@@ -97,24 +107,49 @@ curl http://localhost:8082/api/endpoint
 
 ## 🔐 Authentication Methods
 
-### Manual Authentication (Current)
+### Recommended: CloudFlared CLI Authentication
 
-The proxy prompts you to:
+The easiest and most secure way to authenticate:
+
+1. **Install cloudflared** (if not already installed):
+   ```bash
+   # Download from https://github.com/cloudflare/cloudflared/releases
+   # Or use package manager:
+   brew install cloudflare/cloudflare/cloudflared  # macOS
+   ```
+
+2. **Login via cloudflared**:
+   ```bash
+   cloudflared access login https://your-protected-domain.com
+   ```
+   This opens your browser, handles authentication, and stores the token securely.
+
+3. **Get the token for the proxy**:
+   ```bash
+   export CF_TOKEN=$(cloudflared access token -app=https://your-protected-domain.com)
+   echo $CF_TOKEN  # Copy this token to paste into the proxy
+   ```
+
+4. **Run the proxy** and paste the token when prompted.
+
+**Benefits:**
+- ✅ No manual cookie extraction from browser dev tools
+- ✅ Same CF_Authorization token as browser cookies
+- ✅ Cleaner CLI workflow
+- ✅ Automatic token refresh handling
+
+### Manual Authentication (Fallback)
+
+If cloudflared is not available, the proxy can still work with manual cookie extraction:
 1. Visit the protected domain in your browser
 2. Complete Cloudflare authentication
 3. Extract the `CF_Authorization` cookie from browser dev tools
 4. Provide it to the proxy when prompted
 
 **Session Management:**
-- Cookies expire after 23 hours (typical CF Access session)
-- The proxy will prompt for re-authentication when cookies expire
+- Tokens/cookies expire after 23 hours (typical CF Access session)
+- The proxy will prompt for re-authentication when expired
 - Each request checks authentication status automatically
-
-### Future Enhancements
-
-- Automatic browser cookie extraction
-- Headless browser automation
-- Service account authentication
 
 ## 🐳 Docker Usage
 
@@ -262,11 +297,12 @@ This project is open source and available under the MIT License.
 ## 📊 Status
 
 - ✅ HTTP proxy functionality
+- ✅ CloudFlared CLI authentication (recommended)
 - ✅ Manual Cloudflare Access cookie handling  
 - ✅ Docker registry support with OCI compliance
 - ✅ Multi-method support (GET, POST, PUT, DELETE, HEAD)
-- ✅ Cookie expiration tracking and renewal prompts
-- 🔄 Automatic browser cookie extraction (planned)
+- ✅ Token/cookie expiration tracking and renewal prompts
+- 🔄 Automatic token refresh via cloudflared (planned)
 - 🔄 Configuration file support (planned)
 - 🔄 Multiple domain support (planned)
 
